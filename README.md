@@ -1,90 +1,150 @@
-# animals-chatbot
+# Animals Chatbot
 
-## Goal
+Ask a question about animals in plain language — *"Where do lions live?"*, *"What does an alpaca
+eat?"* — and get a plain-language answer back.
 
-This project is a chatbot designed to provide information about animals, including their characteristics, habitats, and classification into taxonomic groups. It is intended as an educational tool for preschool and school-aged children who are interested in learning more about the animal kingdom in an accessible and engaging way.
+Behind the scenes the question is translated into a formal database query by a language model,
+answered from a structured knowledge graph of animal facts, and turned back into a sentence. The
+project is intended as an educational tool for preschool and school-aged children who want to explore
+the animal kingdom in an accessible and engaging way.
 
+**Stack:** FastAPI · LangChain · OpenAI GPT-4o · Virtuoso · RDF/SPARQL · rdflib · Jinja2
 
-## Animal Ontology
-This ontology defines a structured representation of animal-related knowledge. It models key biological and ecological aspects of animals, including their taxonomy, characteristics, and habitats.
+![System Architecture](assets/system-architecture.png)
 
-The ontology consists of the following components:
+## How it works
 
-- Classes:
+Rather than storing animal facts in ordinary tables, the project stores them as a **knowledge graph**:
+a web of connected statements such as *lion → belongs to → Felidae* or *lion → lives in → Africa*.
+This structure lets the system answer questions that span several relationships at once, and makes the
+data meaningful to a machine rather than just readable.
 
-    - Animal - Represents an individual animal instance
-    - Characteristics - Holds detailed biological and ecological data about an animal
-    - Location - Geographical data for animal habitat
+The chain that answers a question runs in six steps:
 
-- Taxonomic levels: Kingdom, Phylum, Class, Order, Family, Genus, Scientific_name
+1. **Ontology loading** — at startup the app runs a SPARQL `CONSTRUCT` query against the Virtuoso
+   endpoint via SPARQLWrapper, writes the result to a temporary RDF file, and loads it into an
+   in-memory graph through LangChain's `RdfGraph` interface.
+2. **User query** — a free-form question is submitted to the backend over HTTP POST.
+3. **SPARQL generation** — GPT-4o receives the ontology schema and a structured prompt template, and
+   returns a `SELECT` query matching the user's intent and the graph's structure.
+4. **Query execution** — the generated query runs against Virtuoso and returns JSON results.
+5. **Answer construction** — the original question and the raw results go back to GPT-4o, which
+   turns them into a human-readable answer.
+6. **Response** — the answer is returned to the frontend as JSON.
 
-- Object Properties:
+LangChain's `SparqlQAChain` is central to this architecture, acting as the bridge between the user's
+natural language input and the RDF knowledge graph.
 
-    - belongsTo: Links taxonomic entities across classification levels
+## Getting started
 
-    - hasScientificName: Connects an Animal to its Scientific_name
+### Prerequisites
 
-    - hasCharacteristics: Associates an Animal with its Characteristics
+- Python 3.10+
+- Docker (for Virtuoso)
+- An [OpenAI API key](https://platform.openai.com/api-keys)
+- An [API Ninjas](https://api-ninjas.com/api/animals) key, for populating the ontology
 
-    - livesIn: Specifies the Location where an Animal lives
+### 1. Start Virtuoso
 
-- Datatype Properties (associated mostly with Characteristics):
+```bash
+docker compose up -d
+```
 
-    - Include attributes such as diet, color, lifespan, gestation_period, top_speed, prey, skin_type, and many others, all represented as xsd:string literals
+Virtuoso runs at `http://localhost:8890`, with the SPARQL endpoint at `/sparql` and the Conductor
+admin interface at `/conductor`.
 
-#### Purpose
-This ontology is designed to facilitate semantic reasoning and structured querying of animal-related information. It provides a framework for organizing biological data to enable efficient and precise querying using RDF queries.
+### 2. Install dependencies
 
-## Populating ontology
+```bash
+pip install -r requirements.txt
+```
 
-For populating ontology we created Python script which purpose is to enrich an animal ontology RDF graph by integrating  biological data retrieved from the API Ninjas Animals . Starting with a base empty ontology, it queries the API for each animal from predifined list of top 100 interesting animals. The returned JSON data contains taxonomy (kingdom, phylum, class, order, family, genus, scientific name), geographical locations, and various characteristics. The script then applies a sophisticated logic to systematically transform this hierarchical and descriptive data into structured RDF triples using the rdflib library. It models relationships such as taxonomic hierarchy (belongsTo), animal characteristics, and habitats. The final populated ontology is serialized into a new RDF file which will be used to query data
+### 3. Populate the ontology
 
-### Steps to Generate Animal RDF Ontology
+The base ontology ships empty, so it needs to be filled with animal data first.
 
-1. **Load the base RDF ontology file** - Use rdflib.Graph() to create an RDF graph and load the initial empty animal ontology from the RDF/XML file.
+```bash
+cd ontology
+cp .env.example .env        # then add your API Ninjas key
+python populate_ontology.py
+```
 
-2. **Define custom namespaces** - Define the custom namespace for your animal ontology to structure the RDF data consistently.
+This writes `mega_populated_ontology.rdf`. Load that file into Virtuoso through the Conductor
+interface (`http://localhost:8890/conductor` → **Linked Data → Quad Store Upload**), using the graph
+IRI `http://www.semanticweb.org/tehno-trube/ontologies/2024/11/animals_ontology.owl`.
 
-3. **Create URIs and add taxonomy hierarchy** - For each animal, create URIs for the animal and its taxonomic ranks (kingdom, phylum, class, order, family, genus, scientific name). Add RDF triples that represent their types and hierarchical belongsTo relationships to reflect biological taxonomy.
+### 4. Run the app
 
-4. **Add animal-specific data** - Add triples for the animal’s scientific name, geographical locations (habitats), and other biological characteristics, linking them appropriately to the animal entity in the graph.
+The application reads `OPENAI_API_KEY` from a `.env` file in the `app` directory, and must be started
+from that directory (static files, templates, and imports are resolved relative to it).
 
-5. **Handle properties with clean identifiers** - Sanitize property keys (e.g., remove special characters) when converting JSON characteristics to RDF predicates to ensure valid URIs in the ontology.
+```bash
+cd app
+cp .env.example .env        # then add your OpenAI key
+uvicorn main:app --reload
+```
 
-6. **Serialize and save the populated ontology**
-After all animals are processed, serialize the RDF graph back into an RDF/XML file (mega_populated_ontology.rdf) for future semantic queries and reasoning.
+Open `http://localhost:8000`.
+
+## Animal ontology
+
+The ontology defines a structured representation of animal knowledge, modelling the biological and
+ecological aspects of an animal: where it sits in the tree of life, what it is like, and where it
+lives.
+
+**Classes**
+
+| Class | Purpose |
+|---|---|
+| `Animal` | An individual animal instance |
+| `Characteristics` | Biological and ecological data about an animal |
+| `Location` | Geographical habitat data |
+
+**Taxonomic levels:** Kingdom → Phylum → Class → Order → Family → Genus → Scientific_name
+
+**Object properties**
+
+- `belongsTo` — links taxonomic entities across classification levels
+- `hasScientificName` — connects an `Animal` to its `Scientific_name`
+- `hasCharacteristics` — associates an `Animal` with its `Characteristics`
+- `livesIn` — specifies the `Location` where an `Animal` lives
+
+**Datatype properties** — attributes such as `diet`, `color`, `lifespan`, `gestation_period`,
+`top_speed`, `prey`, and `skin_type`, all represented as `xsd:string` literals and attached mostly to
+`Characteristics`.
+
+This design exists to support semantic reasoning and precise querying: because the taxonomy is
+expressed as explicit links rather than plain text, a question like *"which mammals are carnivores?"*
+can be answered by following relationships through the graph.
 
 <img src="./assets/visualization.svg">
 
-## Backend
-The backend of this application is built with FastAPI and integrates semantic technologies to enable natural language question answering over an RDF animal ontology. It communicates with a Virtuoso SPARQL endpoint to fetch and query RDF data, which is dynamically loaded into a temporary RDF graph. This graph is used in alongside LLM (OpenAI GPT-4o) to interpret user queries and translate them into SPARQL. The result of each query is processed and returned as a human-readable answer. LangChain's SparqlQAChain class is central to this architecture, acting as a bridge between the user's natural language input and the RDF-based knowledge graph.
-Chain flow is described in following steps:
-1. **Ontology Loading and Graph Construction**
-At startup, the application queries the RDF data from a Virtuoso SPARQL endpoint using SPARQLWrapper. It performs a CONSTRUCT query to fetch all triples from the ontology and saves the result to a temporary RDF file. This file is then loaded into an in-memory RDF graph using LangChain’s RdfGraph interface.
+## Populating the ontology
 
-2. **User Query Submission**
-Users submit free-form questions (e.g., “Where do lions live?”) through an HTTP POST request to the backend.
+`ontology/populate_ontology.py` enriches the empty base ontology with biological data from the
+[API Ninjas Animals API](https://api-ninjas.com/api/animals). For each animal in a predefined list of
+100 interesting animals, it retrieves taxonomy, geographical locations, and characteristics, then
+transforms that hierarchical JSON into RDF triples using `rdflib`.
 
-3. **SPARQL Query Generation with LLM**
-The system uses LangChain’s LLM pipeline to prompt the GPT-4o model with a structured template and the ontology schema. The model responds with a dynamically generated SPARQL SELECT query that matches the user’s intent and the data structure of the RDF graph.
+The script:
 
-4. **Query Execution**
-The generated SPARQL query is executed against the Virtuoso endpoint, and the matching RDF data is retrieved in JSON format.
+1. Loads the base ontology (`empty_animals_ontology.rdf`) into an `rdflib.Graph`
+2. Defines the custom namespace, so the RDF data is structured consistently
+3. Creates URIs for each animal and its taxonomic ranks, adding `belongsTo` triples that mirror the
+   biological hierarchy
+4. Adds triples for scientific name, habitats, and other characteristics, linked to the animal entity
+5. Sanitizes property keys (stripping special characters) so JSON attributes become valid URIs
+6. Serializes the populated graph to `mega_populated_ontology.rdf` for querying and reasoning
 
-5. **Answer Construction**
-The original question and the query result are passed back to the GPT-4o model, which generates human-understandable answer using another prompt. This process transforms raw RDF response and displays it to users through natural language
-
-6. **Returning the Result**
-The answer is returned to the frontend as a JSON object
-
-![System Architecture](assets/system-architecture.png)
 ## Frontend
-The frontend is a simple web interface served using Jinja2 templates. It allows users to input natural language questions about animals (e.g., “Where does a lion live?”), which are then sent to the backend for processing.
 
-<img src="./assets/frontend1.jpg">
-<img src="./assets/frontend2.jpg">
+A simple web interface served with Jinja2 templates, where users type natural-language questions about
+animals and read the answers.
+
+<img src="./assets/frontend1.jpg" width="400"> <img src="./assets/frontend2.jpg" width="400">
 
 ## Authors
- - Bojan Mijanović R2 3/2024
- - Vukašin Bogdanović R2 12/2024
- - Jovan Jokić R2 19/2024
+
+- [Jovan Jokić](https://github.com/jokicjovan)
+- [Bojan Mijanović](https://github.com/bmijanovic)
+- [Vukašin Bogdanović](https://github.com/vukasinb7)
